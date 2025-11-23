@@ -1,203 +1,147 @@
-const express = require('express');
-const { db, Project, Task } = require('./database/setup');
+// ---------------------------------------------------
+// IMPORTS
+// ---------------------------------------------------
+const express = require("express");
+const session = require("express-session");
+const bcrypt = require("bcryptjs");
+const { db, User, Project, Task } = require("./database/models");
+require("dotenv").config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
+// ---------------------------------------------------
+// MIDDLEWARE
+// ---------------------------------------------------
 app.use(express.json());
 
-// Test database connection
-async function testConnection() {
-    try {
-        await db.authenticate();
-        console.log('Connection to database established successfully.');
-    } catch (error) {
-        console.error('Unable to connect to the database:', error);
+// Sessions
+app.use(
+    session({
+        secret: "supersecretkey123",
+        resave: false,
+        saveUninitialized: false,
+        cookie: { maxAge: 1000 * 60 * 60 } // 1 hour
+    })
+);
+
+// ---------------------------------------------------
+// AUTH MIDDLEWARE
+// ---------------------------------------------------
+function isAuthenticated(req, res, next) {
+    if (!req.session.user) {
+        return res.status(401).json({ error: "Unauthorized. Please log in." });
     }
+    req.user = req.session.user; // attach user data to request
+    next();
 }
 
-testConnection();
+// ---------------------------------------------------
+// TEST ROUTE
+// ---------------------------------------------------
+app.get("/test", (req, res) => {
+    res.json({ message: "Server is running." });
+});
 
-// PROJECT ROUTES
-
-// GET /api/projects - Get all projects
-app.get('/api/projects', async (req, res) => {
+// ---------------------------------------------------
+// USER REGISTRATION
+// POST /api/register
+// ---------------------------------------------------
+app.post("/api/register", async (req, res) => {
     try {
-        const projects = await Project.findAll();
+        const { username, email, password } = req.body;
+
+        if (!username || !email || !password) {
+            return res.status(400).json({ error: "All fields are required." });
+        }
+
+        const existing = await User.findOne({ where: { email } });
+        if (existing) {
+            return res.status(400).json({ error: "Email already exists." });
+        }
+
+        const hashed = await bcrypt.hash(password, 10);
+
+        await User.create({
+            username,
+            email,
+            password: hashed,
+        });
+
+        res.json({ message: "User registered successfully." });
+
+    } catch (error) {
+        console.error("REGISTRATION ERROR:", error);
+        res.status(500).json({ error: "Server error during registration." });
+    }
+});
+
+// ---------------------------------------------------
+// USER LOGIN
+// POST /api/login
+// ---------------------------------------------------
+app.post("/api/login", async (req, res) => {
+    try {
+        const { email, password } = req.body;
+
+        const user = await User.findOne({ where: { email } });
+
+        if (!user) {
+            return res.status(401).json({ error: "Invalid email." });
+        }
+
+        const validPass = await bcrypt.compare(password, user.password);
+        if (!validPass) {
+            return res.status(401).json({ error: "Incorrect password." });
+        }
+
+        req.session.user = {
+            id: user.id,
+            email: user.email,
+            username: user.username
+        };
+
+        res.json({ message: "Login successful." });
+
+    } catch (error) {
+        console.error("LOGIN ERROR:", error);
+        res.status(500).json({ error: "Server error during login." });
+    }
+});
+
+// ---------------------------------------------------
+// LOGOUT
+// POST /api/logout
+// ---------------------------------------------------
+app.post("/api/logout", (req, res) => {
+    req.session.destroy(() => {
+        res.json({ message: "Logged out successfully." });
+    });
+});
+
+// ---------------------------------------------------
+// PROTECTED ROUTE (REQUIRED BY ASSIGNMENT)
+// GET /api/projects
+// ---------------------------------------------------
+app.get("/api/projects", isAuthenticated, async (req, res) => {
+    try {
+        const projects = await Project.findAll({
+            where: { userId: req.user.id },
+            include: Task
+        });
+
         res.json(projects);
+
     } catch (error) {
-        console.error('Error fetching projects:', error);
-        res.status(500).json({ error: 'Failed to fetch projects' });
+        console.error("PROJECT ERROR:", error);
+        res.status(500).json({ error: "Could not fetch projects." });
     }
 });
 
-// GET /api/projects/:id - Get project by ID
-app.get('/api/projects/:id', async (req, res) => {
-    try {
-        const project = await Project.findByPk(req.params.id);
-        
-        if (!project) {
-            return res.status(404).json({ error: 'Project not found' });
-        }
-        
-        res.json(project);
-    } catch (error) {
-        console.error('Error fetching project:', error);
-        res.status(500).json({ error: 'Failed to fetch project' });
-    }
-});
-
-// POST /api/projects - Create new project
-app.post('/api/projects', async (req, res) => {
-    try {
-        const { name, description, status, dueDate } = req.body;
-        
-        const newProject = await Project.create({
-            name,
-            description,
-            status,
-            dueDate
-        });
-        
-        res.status(201).json(newProject);
-    } catch (error) {
-        console.error('Error creating project:', error);
-        res.status(500).json({ error: 'Failed to create project' });
-    }
-});
-
-// PUT /api/projects/:id - Update existing project
-app.put('/api/projects/:id', async (req, res) => {
-    try {
-        const { name, description, status, dueDate } = req.body;
-        
-        const [updatedRowsCount] = await Project.update(
-            { name, description, status, dueDate },
-            { where: { id: req.params.id } }
-        );
-        
-        if (updatedRowsCount === 0) {
-            return res.status(404).json({ error: 'Project not found' });
-        }
-        
-        const updatedProject = await Project.findByPk(req.params.id);
-        res.json(updatedProject);
-    } catch (error) {
-        console.error('Error updating project:', error);
-        res.status(500).json({ error: 'Failed to update project' });
-    }
-});
-
-// DELETE /api/projects/:id - Delete project
-app.delete('/api/projects/:id', async (req, res) => {
-    try {
-        const deletedRowsCount = await Project.destroy({
-            where: { id: req.params.id }
-        });
-        
-        if (deletedRowsCount === 0) {
-            return res.status(404).json({ error: 'Project not found' });
-        }
-        
-        res.json({ message: 'Project deleted successfully' });
-    } catch (error) {
-        console.error('Error deleting project:', error);
-        res.status(500).json({ error: 'Failed to delete project' });
-    }
-});
-
-// TASK ROUTES
-
-// GET /api/tasks - Get all tasks
-app.get('/api/tasks', async (req, res) => {
-    try {
-        const tasks = await Task.findAll();
-        res.json(tasks);
-    } catch (error) {
-        console.error('Error fetching tasks:', error);
-        res.status(500).json({ error: 'Failed to fetch tasks' });
-    }
-});
-
-// GET /api/tasks/:id - Get task by ID
-app.get('/api/tasks/:id', async (req, res) => {
-    try {
-        const task = await Task.findByPk(req.params.id);
-        
-        if (!task) {
-            return res.status(404).json({ error: 'Task not found' });
-        }
-        
-        res.json(task);
-    } catch (error) {
-        console.error('Error fetching task:', error);
-        res.status(500).json({ error: 'Failed to fetch task' });
-    }
-});
-
-// POST /api/tasks - Create new task
-app.post('/api/tasks', async (req, res) => {
-    try {
-        const { title, description, completed, priority, dueDate, projectId } = req.body;
-        
-        const newTask = await Task.create({
-            title,
-            description,
-            completed,
-            priority,
-            dueDate,
-            projectId
-        });
-        
-        res.status(201).json(newTask);
-    } catch (error) {
-        console.error('Error creating task:', error);
-        res.status(500).json({ error: 'Failed to create task' });
-    }
-});
-
-// PUT /api/tasks/:id - Update existing task
-app.put('/api/tasks/:id', async (req, res) => {
-    try {
-        const { title, description, completed, priority, dueDate, projectId } = req.body;
-        
-        const [updatedRowsCount] = await Task.update(
-            { title, description, completed, priority, dueDate, projectId },
-            { where: { id: req.params.id } }
-        );
-        
-        if (updatedRowsCount === 0) {
-            return res.status(404).json({ error: 'Task not found' });
-        }
-        
-        const updatedTask = await Task.findByPk(req.params.id);
-        res.json(updatedTask);
-    } catch (error) {
-        console.error('Error updating task:', error);
-        res.status(500).json({ error: 'Failed to update task' });
-    }
-});
-
-// DELETE /api/tasks/:id - Delete task
-app.delete('/api/tasks/:id', async (req, res) => {
-    try {
-        const deletedRowsCount = await Task.destroy({
-        where: { id: req.params.id }
-        });
-        
-        if (deletedRowsCount === 0) {
-            return res.status(404).json({ error: 'Task not found' });
-        }
-        
-        res.json({ message: 'Task deleted successfully' });
-    } catch (error) {
-        console.error('Error deleting task:', error);
-        res.status(500).json({ error: 'Failed to delete task' });
-    }
-});
-
-// Start server
-app.listen(PORT, () => {
-    console.log(`Server running on port http://localhost:${PORT}`);
+// ---------------------------------------------------
+// SERVER START
+// ---------------------------------------------------
+db.sync().then(() => {
+    console.log("Database synced.");
+    app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 });
